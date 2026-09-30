@@ -170,15 +170,28 @@ new site takes ~30 lines.
 Everything you need is already in this folder: `Dockerfile`, `render.yaml`,
 `railway.json`, `Procfile`, `systemd/otpbot.service`, `.env.example`.
 
-**Option A — free cloud in 5 minutes (Render.com):**
-1. Push this folder to a GitHub repo
-2. Go to [render.com](https://render.com) → **New → Blueprint** → connect the repo
-3. It reads `render.yaml` automatically; enter your `BOT_TOKEN` when asked
-4. Render's free plan only has *web* services (no free background workers), and a
-   free web service **sleeps after ~15 min without HTTP traffic**. The bot serves
-   `/health` automatically — add a free pinger ([UptimeRobot](https://uptimerobot.com) /
-   cron-job.org) hitting `https://<your-app>.onrender.com/health` every 5 min.
-   Free disks are ephemeral: `langs.json` / history reset on redeploy.
+**Option A — Render.com (free web service) — step by step:**
+1. Push this folder to a GitHub repo (private is fine).
+2. [dashboard.render.com](https://dashboard.render.com) → **New → Blueprint** → connect GitHub
+   (allow access to the repo) → pick the repo. Render reads `render.yaml`.
+3. When asked, paste **`BOT_TOKEN`** (from @BotFather). Optional: `ADMIN_IDS` = your Telegram id.
+   *The token lives only in Render's dashboard — never commit it.*
+4. Click **Apply**. The first build takes ~2–4 min. Logs should show `Logged in as @yourbot`.
+5. Open the bot in Telegram → `/start`.
+6. **Keep it awake:** Render's free web services sleep after 15 min without inbound traffic,
+   and a sleeping bot forwards no OTPs. The bot pings its own public URL every 10 min
+   (`KEEP_ALIVE=1`). For a reliable backup add a free monitor on
+   `https://<your-service>.onrender.com/health` every 5 min
+   ([UptimeRobot](https://uptimerobot.com) / cron-job.org).
+
+What to expect on the free plan:
+- 750 free instance-hours/month per workspace = enough for **one** always-on service.
+- Render may restart the service at any time; the filesystem is wiped on restart, so
+  watchers that are running stop, and language choices / history reset. Just press
+  *Get a free number* again. (A paid instance + disk removes this.)
+- Don't run the same bot token anywhere else at the same time (Telegram allows one poller).
+- Python is pinned to 3.12 (`.python-version` + `PYTHON_VERSION`) because Render's default
+  for new services is 3.14, which this project hasn't been tested on.
 
 **Option B — Railway (free trial credit; check current pricing):**
 1. Push to GitHub

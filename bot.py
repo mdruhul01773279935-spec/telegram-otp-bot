@@ -6,6 +6,7 @@ Run:  BOT_TOKEN=123:ABC python bot.py
 
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -21,6 +22,7 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)   # one line per HTTP request is too noisy
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)   # health-check pings
 log = logging.getLogger("bot")
 
 
@@ -39,6 +41,24 @@ async def _start_health_server(port: int):
     await web.TCPSite(runner, "0.0.0.0", port).start()
     log.info("Health server listening on :%s", port)
     return runner
+
+
+async def _keep_alive(base_url: str, every: int = 600) -> None:
+    """Free Render web services sleep after 15 min without *inbound* traffic (and a
+    sleeping bot forwards no OTPs).  Pinging our own public URL counts as inbound
+    traffic.  An external pinger (UptimeRobot) is still recommended as a backup."""
+    import httpx
+
+    url = base_url.rstrip("/") + "/health"
+    await asyncio.sleep(60)
+    async with httpx.AsyncClient(timeout=20) as c:
+        while True:
+            try:
+                r = await c.get(url)
+                log.info("keep-alive %s -> %s", url, r.status_code)
+            except Exception as e:                     # never crash the bot over a ping
+                log.warning("keep-alive failed: %s", e)
+            await asyncio.sleep(every)
 
 
 async def _delayed_warmup() -> None:
@@ -60,7 +80,10 @@ async def main() -> None:
     dp.include_router(handlers.router)
 
     runner = await _start_health_server(PORT) if PORT else None
-    warm = None
+    warm = ping = None
+    public_url = os.environ.get("RENDER_EXTERNAL_URL", "")      # set automatically by Render
+    if public_url and PORT and os.environ.get("KEEP_ALIVE", "1") != "0":
+        ping = asyncio.create_task(_keep_alive(public_url), name="keepalive")
     log.info("Starting polling…")
     try:
         # a leftover webhook would make polling fail with "Conflict"
@@ -81,8 +104,9 @@ async def main() -> None:
         warm = asyncio.create_task(_delayed_warmup(), name="warmup")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        if warm:
-            warm.cancel()
+        for t in (warm, ping):
+            if t:
+                t.cancel()
         handlers.manager.stop_all()
         await scrapers.close_all()
         if runner:

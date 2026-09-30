@@ -1,18 +1,29 @@
-# Render.com deployment.
-# NOTE: Render has no *free* background workers - only free *web* services.
-# A free web service sleeps after ~15 min without HTTP traffic, so point a free
-# uptime pinger (UptimeRobot / cron-job.org) at  https://<your-app>.onrender.com/health
-# The bot serves that page automatically when the PORT env var is set (Render sets it).
+# Render.com Blueprint - free web service running the Telegram bot.
+#
+# Render has no free *background workers*, only free *web services*, so the bot also
+# serves a tiny /health page on $PORT (Render sets PORT automatically).
+# A free service sleeps after 15 min without inbound traffic; the bot pings its own
+# public URL every 10 min to stay awake. Add UptimeRobot on /health as a backup.
+# Free plan = 750 instance-hours/month per workspace (enough for ONE always-on service).
 services:
   - type: web
     name: telegram-otp-bot
     runtime: python
     plan: free
+    region: singapore            # closest Render region to Bangladesh
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /health
+    autoDeployTrigger: commit
     envVars:
       - key: BOT_TOKEN
-        sync: false            # you will be asked to enter it
+        sync: false              # Render asks for it; it is NOT stored in git
       - key: ADMIN_IDS
-        sync: false            # optional: your Telegram user id
+        sync: false              # optional: your numeric Telegram id (enables /stats)
+      - key: PYTHON_VERSION
+        value: 3.12.11           # 3.14 is Render's default for new services - not tested
+      - key: POLL_INTERVAL
+        value: "10"              # be gentle: free services have a traffic threshold
+      - key: KEEP_ALIVE
+        value: "1"
