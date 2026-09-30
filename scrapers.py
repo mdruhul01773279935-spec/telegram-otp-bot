@@ -178,23 +178,34 @@ class BaseSource:
 
     _sem: asyncio.Semaphore | None = None
     MAX_CONCURRENT = 4          # be polite: at most N simultaneous requests per site
+    _last_user: float = 0.0     # last time a *user-driven* request was made
+    _cool_until: float = 0.0    # after a 429 every request to this site waits until then
 
-    async def _get_text(self, url: str, **kw) -> str:
+    async def _get_text(self, url: str, low_priority: bool = False, **kw) -> str:
+        """low_priority=True is for background jobs: they step aside while users are active."""
         c = await self.client()
         if self._sem is None:
             self._sem = asyncio.Semaphore(self.MAX_CONCURRENT)
+        if low_priority:
+            while time.time() - self._last_user < 4:
+                await asyncio.sleep(1)
+        else:
+            self._last_user = time.time()
         last: Exception | None = None
         for attempt in range(3):                      # retries: transient errors + 429
+            wait_cool = self._cool_until - time.time()
+            if wait_cool > 0:
+                await asyncio.sleep(min(wait_cool, 20.0))
             try:
                 async with self._sem:
                     r = await c.get(url, **kw)
-                if r.status_code == 429:              # rate limited -> back off, then retry
+                if r.status_code == 429:              # rate limited -> everyone backs off
                     wait = 2.0 * (attempt + 1)
                     ra = r.headers.get("retry-after", "")
                     if ra.isdigit():
                         wait = min(float(ra), 20.0)
+                    self._cool_until = max(self._cool_until, time.time() + wait)
                     last = httpx.HTTPStatusError("429 Too Many Requests", request=r.request, response=r)
-                    await asyncio.sleep(wait)
                     continue
                 r.raise_for_status()
                 return r.text
@@ -219,6 +230,11 @@ class BaseSource:
 # ---------------------------------------------------------------------------
 
 class TempNumberSource(BaseSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self._dead = set()
+        self._load_dead()             # use yesterday's "empty countries" list right away
+
     name = "temp-number.com"
     home = "https://temp-number.com"
     countries_url = home + "/countries"
@@ -308,6 +324,9 @@ class TempNumberSource(BaseSource):
         A country is only hidden when its page was fetched successfully and
         contained 0 numbers; errors never hide anything.
         """
+        if self._load_dead():                                   # fresh result on disk -> skip the crawl
+            log.info("%s: using cached empty-country list (%d)", self.name, len(self._dead))
+            return
         countries = await self.list_countries()
         todo: asyncio.Queue = asyncio.Queue()
         for sl in countries.values():
@@ -323,18 +342,40 @@ class TempNumberSource(BaseSource):
                 except asyncio.QueueEmpty:
                     return
                 try:
-                    soup = BeautifulSoup(await self._get_text(self._page_url(slug, 1)), "html.parser")
+                    soup = BeautifulSoup(
+                        await self._get_text(self._page_url(slug, 1), low_priority=True), "html.parser")
                 except SourceError:
                     continue                                   # unknown -> keep visible
                 checked += 1
                 if not self._number_links(soup, slug):
                     dead.add(slug)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.8)
 
-        await asyncio.gather(worker(), worker())
+        await worker()                                         # one gentle worker
         if checked >= len(countries) // 2:                    # enough data to trust
             self._dead = dead
+            self._save_dead()
             log.info("%s: hiding %d/%d empty countries", self.name, len(dead), len(countries))
+
+    # -- persisted so a restart doesn't re-crawl 227 pages --------------------
+    _cache_file = os.environ.get("WARMUP_FILE", "warmup_cache.json")
+
+    def _load_dead(self) -> bool:
+        """Load the saved result; True if it is still fresh."""
+        try:
+            with open(self._cache_file, encoding="utf-8") as f:
+                data = json.load(f)
+            self._dead = set(data.get("dead", []))
+            return time.time() - float(data.get("ts", 0)) < WARMUP_INTERVAL_MIN * 60
+        except (OSError, ValueError):
+            return False
+
+    def _save_dead(self) -> None:
+        try:
+            with open(self._cache_file, "w", encoding="utf-8") as f:
+                json.dump({"ts": time.time(), "dead": sorted(self._dead)}, f)
+        except OSError:
+            pass
 
     async def get_messages(self, number: str, key: str | None = None) -> list[SmsMessage]:
         if not key:

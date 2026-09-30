@@ -859,15 +859,26 @@ async def cb_pick_number(q: CallbackQuery):
     async def on_message(w, msg):
         lang = get_lang(chat_id)                       # user may switch language mid-watch
         body = msg.pretty(lang)
-        try:
-            await bot.send_message(
-                chat_id,
-                tr(chat_id, "new_sms", number=pretty_number(w.number), source=w.source.name, body=body),
-                reply_markup=_stop_buttons(chat_id, w.wid, from_sms=True),
-                parse_mode="HTML",
-            )
-        except Exception:
-            log.exception("failed to send message")
+        text = tr(chat_id, "new_sms", number=pretty_number(w.number), source=w.source.name, body=body)
+        for attempt in range(4):                       # never lose an OTP to a network blip
+            try:
+                await bot.send_message(
+                    chat_id, text,
+                    reply_markup=_stop_buttons(chat_id, w.wid, from_sms=True),
+                    parse_mode="HTML",
+                )
+                break
+            except TelegramBadRequest:                 # e.g. bad HTML -> resend as plain text
+                try:
+                    await bot.send_message(chat_id, re.sub(r"<[^>]+>", "", text), parse_mode=None)
+                except Exception:
+                    log.exception("failed to send message (plain)")
+                break
+            except Exception as e:
+                log.warning("send to %s failed (attempt %d): %s", chat_id, attempt + 1, e)
+                await asyncio.sleep(1.5 * (attempt + 1))
+        else:
+            log.error("giving up sending SMS to %s", chat_id)
         storage.log_sms(chat_id, "", w.source.name, w.number, f"{msg.sender}: {msg.text}")
 
     async def on_done(w, reason, **kw):

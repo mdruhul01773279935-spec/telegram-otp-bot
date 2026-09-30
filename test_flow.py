@@ -35,6 +35,7 @@ class FakeSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.calls = []          # (method_name, data)
+        self.fail_sends = 0      # make the next N SendMessage calls fail (network blip)
 
     async def close(self): ...
     async def stream_content(self, *a, **k): yield b""
@@ -43,8 +44,12 @@ class FakeSession(BaseSession):
         data = method.model_dump(exclude_none=True)
         if getattr(method, "reply_markup", None) is not None:
             data["reply_markup"] = method.reply_markup        # keep real objects
-        self.calls.append((type(method).__name__, data))
         name = type(method).__name__
+        if name == "SendMessage" and self.fail_sends > 0:      # failed sends are not recorded as delivered
+            self.fail_sends -= 1
+            from aiogram.exceptions import TelegramNetworkError
+            raise TelegramNetworkError(method=method, message="simulated network blip")
+        self.calls.append((name, data))
         if name in ("SendMessage", "EditMessageText"):
             mid = data.get("message_id") or next(ids)
             return Message(message_id=mid, date=int(time.time()),
@@ -305,6 +310,13 @@ async def main():
     await asyncio.sleep(2.5)
     sms = [d for d in session.of("SendMessage") if "G-123456" in d["text"]]
     check(len(sms) == 2, f"identical resent OTP forwarded again (got {len(sms)})")
+
+    # ---- a network blip while forwarding must NOT lose the OTP
+    session.fail_sends = 2
+    fake.inbox.insert(0, SmsMessage("Bank", "now", "BLIP-424242 is your code"))
+    await asyncio.sleep(8)
+    blip = [d for d in session.of("SendMessage") if "BLIP-424242" in d["text"]]
+    check(len(blip) == 1, f"OTP delivered exactly once despite 2 failed sends (got {len(blip)})")
 
     # ---- history with '<' in text must not crash
     n_err = len([1 for n, d in session.calls if n == "SendMessage" and "Can't parse" in d.get("text", "")])

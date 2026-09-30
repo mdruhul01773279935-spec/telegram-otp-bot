@@ -19,6 +19,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)   # one line per HTTP request is too noisy
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("bot")
 
 
