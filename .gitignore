@@ -1,0 +1,5 @@
+.env
+langs.json
+otp_history.jsonl
+__pycache__/
+*.pyc
